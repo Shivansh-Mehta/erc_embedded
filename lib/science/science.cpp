@@ -67,8 +67,10 @@ pHSensor::pHSensor(uint8_t pin, float offset)
 
 float pHSensor::get_value()
 {
-  float voltage = read_voltage();
-  return (3.5f * voltage) + m_calibration_offset;
+  float voltage = (read_voltage());
+  float slope = ((7.0 - 4.0) / (1.5 - 2.03));
+  float raw_ph = 7.0 + (slope * (voltage - 1.5));
+  return raw_ph;
 }
 
 void pHSensor::set_calibration_offset(float offset)
@@ -81,19 +83,37 @@ CapacitiveMoistureSensor::CapacitiveMoistureSensor(uint8_t pin)
 
 float CapacitiveMoistureSensor::get_value()
 {
-  // For capacitive moisture, the raw ADC reading maps inversely to water content.
-  // (We use m_pin directly, which is protected in the base class)
-  return static_cast<float>(analogRead(m_pin));
+  float raw = static_cast<float>(analogRead(m_pin));
+
+  // Map the raw values to a 0-100% scale
+  // Air = 759.0, Water = 403.0
+  float moisture_pct = ((759.0f - raw) / (759.0f - 403.0f)) * 100.0f;
+
+  // Clamp the output so it doesn't go below 0% or above 100%
+  if (moisture_pct < 0.0f)
+    return 0.0f;
+  if (moisture_pct > 100.0f)
+    return 100.0f;
+
+  return moisture_pct;
 }
 
 TDSSensor::TDSSensor(uint8_t pin) : AnalogSensor(pin) {}
 
 float TDSSensor::get_value()
 {
-  // Currently returns the raw ADC value.
-  // We can apply a specific voltage-to-ppm polynomial equation here
-  // once we calibrate it with a known TDS solution.
-  return static_cast<float>(analogRead(m_pin));
+  // 1. Get the actual voltage (using your base class function)
+  float voltage = read_voltage();
+
+  // 2. Apply a calibration factor.
+  // You will need to calculate this by placing the sensor in a known TDS fluid.
+  // Example: If a 1000 ppm fluid gives a reading of 1.5V, your factor is (1000 / 1.5) = 666.67
+  float calibration_factor = 666.67f; // Replace with your tested number
+
+  float tds_value = voltage * calibration_factor;
+
+  // Optional: clamp to 0 if noise pulls the voltage slightly negative
+  return (tds_value < 0.0f) ? 0.0f : tds_value;
 }
 
 ORPSensor::ORPSensor(uint8_t pin, float offset)
@@ -105,7 +125,6 @@ float ORPSensor::get_value()
 
   // Apply standard ORP formula based on 3.3V reference and 75x Op-Amp gain
   float orp_value = ((30.0f * V_REF * 1000.0f) - (75.0f * voltage * 1000.0f)) / 75.0f;
-
   return orp_value + m_calibration_offset;
 }
 
@@ -202,19 +221,20 @@ void SCD41Sensor::request_read()
 
 float SCD41Sensor::get_value()
 {
-  // read the 12 bytes prepared by the request_read command
-  Wire.requestFrom(m_i2c_addr, static_cast<uint8_t>(12));
+  // SCD41 sends exactly 9 bytes for a read measurement
+  Wire.requestFrom(m_i2c_addr, static_cast<uint8_t>(9));
 
-  if (Wire.available() >= 12)
+  if (Wire.available() >= 9)
   {
-    uint8_t data[12];
-    for (int i = 0; i < 12; i++)
+    uint8_t data[9];
+    for (int i = 0; i < 9; i++)
     {
       data[i] = Wire.read();
     }
-    // bitwise shift to combine the high and low bytes of the CO2 reading
+    // Bitwise shift to combine the High and Low bytes of the CO2 reading
     return static_cast<float>((uint16_t)data[0] << 8 | data[1]);
   }
 
+  // Return 0.0 if data was not available on the bus
   return 0.0f;
 }

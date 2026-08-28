@@ -45,17 +45,17 @@ rcl_timer_t timer;
 
 enum TelemetryIndex
 {
-  IDX_PH = 0,
-  IDX_SOIL_MOISTURE,
-  IDX_TDS,
-  IDX_ORP,
-  IDX_SOIL_TEMP,
-  IDX_BME_TEMP,
-  IDX_BME_HUM,
-  IDX_BME_PRESS,
-  IDX_BME_GAS,
-  IDX_SCD_CO2,
-  TELEMETRY_SIZE
+  IDX_PH = 0,            // 0.0 - 14.0 (7.0 is neutral)
+  IDX_SOIL_MOISTURE = 1, // 0 - 100 %
+  IDX_TDS = 2,           // ppm or µS/cm (Minerals/Salts)
+  IDX_ORP = 3,           // mV (Oxidation-Reduction Potential)
+  IDX_SOIL_TEMP = 4,     // °C (DS18B20 Soil Probe)
+  IDX_BME_TEMP = 5,      // °C (Ambient Air)
+  IDX_BME_HUM = 6,       // % (Relative Humidity)
+  IDX_BME_PRESS = 7,     // hPa (Atmospheric Pressure)
+  IDX_BME_GAS = 8,       // Ohms (VOC Resistance, higher = cleaner)
+  IDX_SCD_CO2 = 9,       // ppm (Baseline fresh air is ~400)
+  TELEMETRY_SIZE = 10
 };
 
 float msg_data_buffer[TELEMETRY_SIZE];
