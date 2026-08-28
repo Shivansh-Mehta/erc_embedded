@@ -1,4 +1,4 @@
-# HSM Aries - Hardware Abstraction Library (`lib/`)
+# HSM Aries - Drill Module Library (`lib/`)
 
 Welcome to the custom hardware library for the European Rover Challenge (ERC) firmware. This directory contains the object-oriented C++ classes that abstract the physical hardware components of the rover. 
 
