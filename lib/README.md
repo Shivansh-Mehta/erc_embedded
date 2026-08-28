@@ -1,41 +1,44 @@
-# HSM Aries - Hardware Abstraction Library (`lib/`)
+# HSM Aries - Science Module Library (`lib/`)
 
-Welcome to the custom hardware library for the European Rover Challenge (ERC) firmware. This directory contains the object-oriented C++ classes that abstract the physical hardware components of the rover. 
+Welcome to the custom hardware library for the European Rover Challenge (ERC) environmental science module. This directory contains the object-oriented C++ classes that abstract the physical sensors of the rover.
 
-By keeping hardware logic in these classes, our `main.cpp` remains clean and focuses solely on the micro-ROS communication layer.
+By keeping hardware logic in these classes, our `main.cpp` remains clean and focuses solely on the micro-ROS communication layer and sequential state machines.
 
 ---
 
 ## File Structure
 
 The hardware components are divided into logical modules:
-*   **`drill.h` & `drill.cpp`**: Contains the core actuator, motor, and sensor classes for the drilling and soil collection mechanisms.
-*   **`emg.h` & `emg.cpp`**: Contains classes for emergency management and status indicators (e.g., the stack light).
+
+* **`science.h` & `science.cpp**`: Contains the core analog and digital sensor classes required for environmental telemetry.
+* **`emg.h` & `emg.cpp**`: Contains classes for emergency management and status indicators (e.g., the stack light).
 
 ---
 
 ## Hardware Classes Overview
 
-### Motors & Actuators
-All heavy-duty motors inherit from a base `Driver` class to standardize PWM and direction control.
-*   **`Driver`**: The foundational class that manages PWM frequency (`analogWriteFrequency`), speed constraints, and dual-pin direction configuration. 
-*   **`AugerMotor`**: Inherits from `Driver` to control the rotational drill mechanism.
-*   **`LeadScrewMotor`**: Inherits from `Driver` to control the vertical translation of the drill.
-*   **`LinearActuator`**: Inherits from `Driver` but adds complex, time-based position tracking. It utilizes the Teensy's hardware `IntervalTimer` to execute non-blocking extensions, retractions, and homing routines based on the OEM speed constraints (15.0 mm/s).
-*   **`GripperServo`**: A custom wrapper around the standard `Servo.h` library. It includes a built-in slew-rate limiter (`update()`) to ensure the servo moves smoothly to its target rather than snapping violently, which protects the physical hardware.
+### Analog Sensors
 
-### Sensors & Inputs
-*   **`LimitSwitch`**: An interrupt-driven hardware switch handler. It automatically configures the pins as `INPUT_PULLUP` and attaches a `FALLING` interrupt. It features a built-in software debounce mechanism to prevent false triggers.
-*   **`LoadCell`**: A dedicated class utilizing the `HX711` library to interface with the strain gauges for weighing soil samples.
+All standard analog sensors inherit from a base `AnalogSensor` class to standardize pin configuration and 10-bit ADC voltage calculations.
 
-### Indicators
-*   **`StackLight`**: Controls the three-color (Green, Yellow, Red) visual indicator on the rover. It provides a simple `state()` method to instantly switch between predefined color configurations.
+* **`AnalogSensor`**: The foundational class that manages `analogRead` math and voltage conversions.
+* **`pHSensor` & `ORPSensor**`: Analog implementations that apply specific linear transformations and Op-Amp formulas, featuring on-the-fly calibration offset support.
+* **`CapacitiveMoistureSensor` & `TDSSensor**`: Implementations that retrieve raw ADC signals to be mapped later against known calibration fluids or bounds.
+
+### Digital Sensors
+
+All bus-based sensors inherit from a `DigitalSensor` class, which enforces a non-blocking `request_read()` architecture to ensure the micro-ROS executor is never interrupted.
+
+* **`DS18B20Sensor`**: A OneWire soil temperature wrapper configured strictly for asynchronous measuring, preventing standard 750ms CPU delays.
+* **`BME688Sensor`**: An I2C implementation that fetches ambient temperature, humidity, pressure, and gas resistance simultaneously via memory references.
+* **`SCD41Sensor`**: An I2C CO2 sensor class utilizing delayed bus polling for seamless data extraction.
 
 ---
 
 ## Dependencies
 
 These classes rely on the following external libraries, which are automatically managed by PlatformIO in the `platformio.ini` file:
-*   **`Servo.h`**: For standard PWM servo control.
-*   **`HX711.h`**: For reading the load cell amplifiers.
-*   **`IntervalTimer.h`**: Teensy core library for hardware-level timer interrupts.
+
+* **`Wire.h`**: Built-in standard library for I2C communication (BME688, SCD41).
+* **`OneWire.h` & `DallasTemperature.h**`: Required for the DS18B20 1-Wire protocol.
+* **`Zanshin_BME680`**: High-precision driver for calculating the BME688 environmental metrics.
