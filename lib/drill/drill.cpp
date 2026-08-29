@@ -285,6 +285,7 @@ LoadCell::LoadCell(uint8_t dout_pin, uint8_t sck_pin, float scale_factor)
       m_sck_pin(sck_pin),
       m_scale_factor(scale_factor),
       m_current_weight(0.0f),
+      m_empty_tare_weight(0.0f), // Initialize it here
       m_lid_tare_weight(0.0f),
       m_is_stable(false),
       m_last_read_ms(0),
@@ -300,6 +301,12 @@ void LoadCell::init()
 {
   m_load_cell.begin(m_dout_pin, m_sck_pin);
   m_load_cell.set_scale(m_scale_factor);
+
+  // Resets the internal HX711 offset to 0 during boot
+  if (m_load_cell.is_ready())
+  {
+    m_load_cell.tare(10); // Takes average of 10 readings to set a solid baseline[cite: 11]
+  }
 }
 
 bool LoadCell::is_ready()
@@ -309,20 +316,24 @@ bool LoadCell::is_ready()
 
 void LoadCell::tare_empty()
 {
-  if (m_load_cell.is_ready())
-  {
-    m_load_cell.tare(10);
-    m_lid_tare_weight = 0.0f;
-  }
+  // Capture the current EMA weight as the empty container offset
+  m_empty_tare_weight = m_current_weight;
+  m_lid_tare_weight = 0.0f;
 }
 
 void LoadCell::tare_with_lid()
 {
-  // Stores current reading as the empty lid baseline
-  if (m_load_cell.is_ready())
-  {
-    m_lid_tare_weight = m_load_cell.get_units(10);
-  }
+  // Set the lid weight relative to the empty container tare
+  m_lid_tare_weight = m_current_weight - m_empty_tare_weight;
+}
+
+// ... (keep set_scale(), get_scale(), get_raw_value() the same)
+
+float LoadCell::get_soil_weight()
+{
+  // Net weight = Total - Empty Container - Lid
+  float net_weight = m_current_weight - m_empty_tare_weight - m_lid_tare_weight;
+  return net_weight; // Clamp noise near zero if needed
 }
 
 void LoadCell::set_scale(float scale_factor)
@@ -343,13 +354,6 @@ float LoadCell::get_raw_value(uint8_t samples)
     return m_load_cell.read_average(samples);
   }
   return 0;
-}
-
-float LoadCell::get_soil_weight()
-{
-  // Net weight = Total measured weight - Lid weight
-  float net_weight = m_current_weight - m_lid_tare_weight;
-  return (net_weight < 0.0f) ? 0.0f : net_weight; // Clamp noise near zero
 }
 
 bool LoadCell::is_stable()

@@ -155,6 +155,7 @@ private:
 
   float m_current_weight;
   float m_lid_tare_weight; // Stores the isolated weight of the lid
+  float m_empty_tare_weight;
   bool m_is_stable;
 
   uint32_t m_last_read_ms;
