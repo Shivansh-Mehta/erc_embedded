@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <Servo.h>
+#include <math.h>
 #include <HX711.h>
 #include <IntervalTimer.h>
 
@@ -25,8 +26,8 @@ private:
   uint8_t m_pin_pwm;
   uint8_t m_pin_in1;
   uint8_t m_pin_in2;
-  int m_cache_speed;
-  bool m_cache_dir;
+  int m_cache_speed = 0;
+  bool m_cache_dir = false;
 };
 
 class AugerMotor : private Driver
@@ -76,17 +77,31 @@ private:
   void handle_isr();
 };
 
-// Servo Class ====================================================================================================
-class CustomServo
+// Servo Classes ====================================================================================================
+
+// Standard closed-loop positional servo (e.g. the gripper). Commanded with a
+// normalized position in [0.0, 1.0]; internally holds that angle and slews
+// smoothly toward a new target rather than snapping to it.
+class GripperServo
 {
 public:
-  CustomServo(uint8_t servo_pin);
+  GripperServo(uint8_t servo_pin, int min_us = 850, int max_us = 2200,
+               float slew_deg_per_sec = 550.0f, float travel_deg = 270.0f);
   void init();
   void set_target(float target_normalized);
   void update();
 
+  // Feedback
+  float get_position() const { return m_current_normalized; }
+  float get_target() const { return m_target_normalized; }
+  bool is_at_target() const;
+
+  // Control
+  void stop();   // cancel any in-progress move, hold current position
+  void detach(); // power down the servo (re-attach by calling init() again)
+
 private:
-  int normalized_to_us(float t);
+  int normalized_to_us(float t) const;
 
   uint8_t m_servo_pin;
   Servo m_servo;
@@ -94,11 +109,53 @@ private:
   float m_current_normalized;
   float m_target_normalized;
   uint32_t m_last_update_ms;
+  bool m_initialized;
 
-  // Use static constexpr to compile these directly into flash, saving RAM
-  static constexpr int m_min_us = 850;
-  static constexpr int m_max_us = 2200;
-  static constexpr float m_slew_deg_per_sec = 550.0f;
+  const int m_min_us;
+  const int m_max_us;
+  const float m_slew_deg_per_sec;
+  const float m_travel_deg;
+};
+
+// 360-degree continuous-rotation servo (e.g. the lid). Unlike GripperServo,
+// pulse width here maps to SPEED and DIRECTION, not an absolute angle - there
+// is no positional feedback at all, so this class has no concept of "target
+// position", only "how fast and which way right now".
+//
+// neutral_us is the calibrated stop point for this specific physical servo
+// unit. It varies unit-to-unit (often not exactly 1500us) because it depends
+// on how the servo's internal centering pot was trimmed - test yours and
+// tune this value until it truly holds still at speed 0.
+// max_deviation_us is how far above/below neutral corresponds to full speed
+// in each direction (typical hobby servos: ~350-500us for full speed).
+class LidServo
+{
+public:
+  LidServo(uint8_t servo_pin, int neutral_us = 1500, int max_deviation_us = 400);
+  void init();
+  void set_speed(float speed);
+  void stop();
+  float get_speed() const { return m_current_speed; }
+  void rotate_for(float speed, float duration_s);
+
+  // Call every loop() iteration. Auto-stops if no new set_speed() has
+  // arrived within command_timeout_ms - unlike GripperServo, a speed
+  // command has no natural resting state, so a dropped "stop" packet
+  // (or a lost ROS link) would otherwise spin this servo forever.
+  void update(uint32_t command_timeout_ms = 500);
+
+private:
+  uint8_t m_servo_pin;
+  Servo m_servo;
+  int m_neutral_us;
+  int m_max_deviation_us;
+  float m_current_speed;
+  uint32_t m_last_cmd_ms = 0; // NEW
+
+  IntervalTimer m_timer;
+  static LidServo *m_instance_lid;
+  static void isr_timer_router();
+  void handle_isr();
 };
 
 // Switch Class ====================================================================================================
@@ -107,7 +164,17 @@ class LimitSwitch
 public:
   LimitSwitch(uint8_t pin_switch, uint32_t debounce_ms);
   void init();
+
+  // Edge-triggered, one-shot: returns true once per debounced trigger event,
+  // then clears itself. Use this to react to a NEW trigger (e.g. stop a motor).
   bool is_triggered();
+
+  // Level state: returns whether the switch is physically pressed RIGHT NOW,
+  // with no side effects. Use this for telemetry/status publishing - reading
+  // is_triggered() for that purpose would race with anything else consuming
+  // the same one-shot flag and almost always read back false.
+  bool is_pressed() const;
+
   volatile bool m_triggered;
   volatile uint32_t m_last_interrupt_time;
 

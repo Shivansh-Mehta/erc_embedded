@@ -20,10 +20,16 @@ void Driver::init_driver()
 
 void Driver::drive(int pwm_speed, bool dir)
 {
-  // if the new speed value takes place in the opp direction, then reduce the motor speed to zero first
+  // If reversing direction, actually bring the motor to zero and let that
+  // settle before flipping the H-bridge direction pins. Previously this set
+  // PWM to 0 and then immediately overwrote it with the new speed on the
+  // very next line with no gap, so the "safety" zero never had any effect -
+  // the direction pins still saw a full-speed reversal with zero dead-time.
   if (dir != m_cache_dir)
   {
-    analogWrite(m_pin_pwm, constrain(0, 0, 255));
+    analogWrite(m_pin_pwm, 0);
+    delay(5); // brief settling time before reversing - avoids an instant
+              // full-speed direction flip on the H-bridge
   }
 
   analogWrite(m_pin_pwm, constrain(pwm_speed, 0, 255));
@@ -146,45 +152,59 @@ void LinearActuator::handle_isr()
 
 void LinearActuator::home(bool dir)
 {
-  m_home_dur += 1; // add 1 more second(s) for homing duration
+  // Pad this one homing move by 1 extra second, without permanently
+  // growing m_home_dur - it must stay the same on every future call.
+  float dur = m_home_dur + 1.0f;
   if (dir)
   {
     drive(m_pwm_speed, false);
-    m_timer.begin(isr_timer_router, (m_home_dur * 1000 * 1000));
+    m_timer.begin(isr_timer_router, (dur * 1000 * 1000));
   }
   else
   {
     drive(m_pwm_speed, true);
-    m_timer.begin(isr_timer_router, (m_home_dur * 1000 * 1000));
+    m_timer.begin(isr_timer_router, (dur * 1000 * 1000));
   }
 }
 
-CustomServo::CustomServo(uint8_t servo_pin)
+// GripperServo ======================================================================================================
+GripperServo::GripperServo(uint8_t servo_pin, int min_us, int max_us,
+                           float slew_deg_per_sec, float travel_deg)
     : m_servo_pin(servo_pin),
       m_current_normalized(0.0f),
       m_target_normalized(0.0f),
-      m_last_update_ms(0)
+      m_last_update_ms(0),
+      m_initialized(false),
+      m_min_us(min_us),
+      m_max_us(max_us),
+      m_slew_deg_per_sec(slew_deg_per_sec),
+      m_travel_deg(travel_deg)
 {
 }
 
-void CustomServo::init()
+void GripperServo::init()
 {
   m_servo.attach(m_servo_pin, m_min_us, m_max_us);
   m_servo.writeMicroseconds(normalized_to_us(m_current_normalized));
+
+  // Reset the slew clock here, not just in the constructor. Without this,
+  // the first update() after boot sees dt_ms = millis() since power-on
+  // (often several seconds), computes a huge max_step, and snaps straight
+  // to the first target instead of slewing into it.
+  m_last_update_ms = millis();
+  m_initialized = true;
 }
 
-void CustomServo::set_target(float target_normalized)
+void GripperServo::set_target(float target_normalized)
 {
-  if (target_normalized < 0.0f)
-    target_normalized = 0.0f;
-  if (target_normalized > 1.0f)
-    target_normalized = 1.0f;
-
-  m_target_normalized = target_normalized;
+  m_target_normalized = constrain(target_normalized, 0.0f, 1.0f);
 }
 
-void CustomServo::update()
+void GripperServo::update()
 {
+  if (!m_initialized)
+    return;
+
   unsigned long now_ms = millis();
   unsigned long dt_ms = now_ms - m_last_update_ms;
 
@@ -192,7 +212,7 @@ void CustomServo::update()
     return;
   m_last_update_ms = now_ms;
 
-  const float max_step = m_slew_deg_per_sec / 270.0f / 1000.0f * (float)dt_ms;
+  const float max_step = m_slew_deg_per_sec / m_travel_deg / 1000.0f * (float)dt_ms;
   float diff = m_target_normalized - m_current_normalized;
 
   if (diff > max_step)
@@ -211,9 +231,78 @@ void CustomServo::update()
   m_servo.writeMicroseconds(normalized_to_us(m_current_normalized));
 }
 
-int CustomServo::normalized_to_us(float t)
+bool GripperServo::is_at_target() const
 {
-  return (int)(m_min_us + t * (m_max_us - m_min_us));
+  return fabsf(m_target_normalized - m_current_normalized) < 0.001f;
+}
+
+void GripperServo::stop()
+{
+  // Freeze in place: cancel any pending move by making "target" equal
+  // to wherever we currently are.
+  m_target_normalized = m_current_normalized;
+}
+
+void GripperServo::detach()
+{
+  m_servo.detach();
+  m_initialized = false;
+}
+
+int GripperServo::normalized_to_us(float t) const
+{
+  return (int)lroundf(m_min_us + t * (m_max_us - m_min_us));
+}
+
+// LidServo ==========================================================================================================
+LidServo *LidServo::m_instance_lid = nullptr;
+
+LidServo::LidServo(uint8_t servo_pin, int neutral_us, int max_deviation_us)
+    : m_servo_pin(servo_pin),
+      m_neutral_us(neutral_us),
+      m_max_deviation_us(max_deviation_us),
+      m_current_speed(0.0f)
+{
+  m_instance_lid = this;
+}
+
+void LidServo::init()
+{
+  m_servo.attach(m_servo_pin);
+  stop(); // command the neutral (stop) pulse immediately so it doesn't spin on boot
+}
+
+void LidServo::set_speed(float speed)
+{
+  m_current_speed = constrain(speed, -1.0f, 1.0f);
+  int us = m_neutral_us + (int)lroundf(m_current_speed * m_max_deviation_us);
+  m_servo.writeMicroseconds(us);
+}
+
+void LidServo::stop()
+{
+  m_current_speed = 0.0f;
+  m_servo.writeMicroseconds(m_neutral_us);
+}
+
+void LidServo::rotate_for(float speed, float duration_s)
+{
+  set_speed(speed);
+  m_timer.begin(isr_timer_router, (unsigned int)(duration_s * 1000.0f * 1000.0f));
+}
+
+void LidServo::isr_timer_router()
+{
+  if (m_instance_lid != nullptr)
+  {
+    m_instance_lid->handle_isr();
+  }
+}
+
+void LidServo::handle_isr()
+{
+  m_timer.end();
+  stop();
 }
 
 LimitSwitch *LimitSwitch::m_instances_ls[LIMIT_SWITCH_INSTANCES] = {nullptr};
@@ -280,6 +369,12 @@ bool LimitSwitch::is_triggered()
   return false;
 }
 
+bool LimitSwitch::is_pressed() const
+{
+  // INPUT_PULLUP: pin reads LOW when the switch is actively pressed/closed.
+  return digitalRead(m_pin_switch) == LOW;
+}
+
 LoadCell::LoadCell(uint8_t dout_pin, uint8_t sck_pin, float scale_factor)
     : m_dout_pin(dout_pin),
       m_sck_pin(sck_pin),
@@ -302,11 +397,25 @@ void LoadCell::init()
   m_load_cell.begin(m_dout_pin, m_sck_pin);
   m_load_cell.set_scale(m_scale_factor);
 
-  // Resets the internal HX711 offset to 0 during boot
+  // Wait for the HX711 to report ready, but bounded - this is what actually
+  // caused the earlier boot hang. is_ready() itself is a quick non-blocking
+  // pin check, but tare()/read_average() loop internally with no timeout of
+  // their own, so if the chip never asserts ready (unpowered, unwired, dead),
+  // calling tare() unconditionally can block setup() forever. Give it a
+  // fixed window instead, and skip the tare if it never comes up.
+  uint32_t start_ms = millis();
+  while (!m_load_cell.is_ready() && (millis() - start_ms) < 250)
+  {
+    // busy-wait briefly; setup() blocking for up to 250ms once at boot is
+    // fine, hanging forever is not
+  }
+
   if (m_load_cell.is_ready())
   {
-    m_load_cell.tare(10); // Takes average of 10 readings to set a solid baseline[cite: 11]
+    m_load_cell.tare(10); // Takes average of 10 readings to set a solid baseline
   }
+  // else: leave m_current_weight at its default 0.0f; get_soil_weight()
+  // will just report 0 until this cell comes online, rather than blocking.
 }
 
 bool LoadCell::is_ready()
@@ -326,8 +435,6 @@ void LoadCell::tare_with_lid()
   // Set the lid weight relative to the empty container tare
   m_lid_tare_weight = m_current_weight - m_empty_tare_weight;
 }
-
-// ... (keep set_scale(), get_scale(), get_raw_value() the same)
 
 float LoadCell::get_soil_weight()
 {

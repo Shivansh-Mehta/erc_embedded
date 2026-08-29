@@ -52,15 +52,15 @@ void error_loop()
 
 #define SAND_BOX_DT 17
 #define SAND_BOX_SCK 16
-#define SAND_BOX_SF 1.0f
+#define SAND_BOX_SF 20.0f
 
 #define ROCK_BOX_DT 34
 #define ROCK_BOX_SCK 33
-#define ROCK_BOX_SF 1.0f
+#define ROCK_BOX_SF 21.0f
 
 #define DCONT_BOX_DT 32
 #define DCONT_BOX_SCK 31
-#define DCONT_BOX_SF -41.5f
+#define DCONT_BOX_SF -30.0f
 
 #define STALIG_G 37
 #define STALIG_Y 36
@@ -106,11 +106,14 @@ StackLight stalig(STALIG_G, STALIG_Y, STALIG_R);
 
 rcl_subscription_t gservo_cmd_sub;
 std_msgs__msg__Float32 gservo_cmd_msg;
-CustomServo gservo(GRIPPER_SERVO);
+GripperServo gservo(GRIPPER_SERVO);
 
 rcl_subscription_t lservo_cmd_sub;
 std_msgs__msg__Float32 lservo_cmd_msg;
-CustomServo lservo(LID_SERVO);
+// TODO: calibrate neutral_us for this specific servo unit - 1500 is a
+// starting point, not guaranteed to be the true stop point. Tune it until
+// speed 0 truly holds still with no drift.
+LidServo lservo(LID_SERVO, 1500, 400);
 
 // Load Cells (Sand, Rock, Drill Container)
 rcl_subscription_t sand_box_cmd_sub;
@@ -155,6 +158,8 @@ void dcont_box_cmd_callback(const void *msin);
 
 void setup()
 {
+  Serial.begin(115200);
+
   switch1.init();
   switch2.init();
   motor1.init_motor();
@@ -163,10 +168,11 @@ void setup()
   stalig.init_light();
   gservo.init();
   lservo.init();
-  sand_box.init();
+  // sand_box.init();
   rock_box.init();
-  drill_cont.init();
+  // drill_cont.init();
 
+  digitalWrite(LED_BUILTIN, HIGH);
   set_microros_serial_transports(Serial);
 }
 
@@ -185,10 +191,9 @@ void loop()
 
   // Non-blocking updates
   gservo.update();
-  lservo.update();
-  sand_box.update();
+  // sand_box.update();
   rock_box.update();
-  drill_cont.update();
+  // drill_cont.update();
 
   static uint32_t last_ping_ms = 0;
   static uint32_t last_pub_ms = 0;
@@ -226,31 +231,24 @@ void loop()
       {
         last_pub_ms = now;
 
-        sand_box_rec_msg.data = sand_box.get_soil_weight();
-        rcl_publish(&sand_box_pub, &sand_box_rec_msg, NULL);
-        rock_box_rec_msg.data = rock_box.get_soil_weight();
-        rcl_publish(&rock_box_pub, &rock_box_rec_msg, NULL);
-        drill_cont_rec_msg.data = drill_cont.get_soil_weight();
-        rcl_publish(&drill_cont_pub, &drill_cont_rec_msg, NULL);
-
         // if (sand_box.is_stable())
         // {
-        //   sand_box_rec_msg.data = sand_box.get_soil_weight();
-        //   rcl_publish(&sand_box_pub, &sand_box_rec_msg, NULL);
+        sand_box_rec_msg.data = sand_box.get_soil_weight();
+        rcl_publish(&sand_box_pub, &sand_box_rec_msg, NULL);
         // }
         // if (rock_box.is_stable())
         // {
-        //   rock_box_rec_msg.data = rock_box.get_soil_weight();
-        //   rcl_publish(&rock_box_pub, &rock_box_rec_msg, NULL);
+        rock_box_rec_msg.data = rock_box.get_soil_weight();
+        rcl_publish(&rock_box_pub, &rock_box_rec_msg, NULL);
         // }
         // if (drill_cont.is_stable())
         // {
-        //   drill_cont_rec_msg.data = drill_cont.get_soil_weight();
-        //   rcl_publish(&drill_cont_pub, &drill_cont_rec_msg, NULL);
+        drill_cont_rec_msg.data = drill_cont.get_soil_weight();
+        rcl_publish(&drill_cont_pub, &drill_cont_rec_msg, NULL);
         // }
-        limit_switch_1_status.data = switch1.m_triggered;
+        limit_switch_1_status.data = switch1.is_pressed();
         rcl_publish(&limit_switch_1_pub, &limit_switch_1_status, NULL);
-        limit_switch_2_status.data = switch2.m_triggered;
+        limit_switch_2_status.data = switch2.is_pressed();
         rcl_publish(&limit_switch_2_pub, &limit_switch_2_status, NULL);
       }
     }
@@ -320,7 +318,9 @@ void gservo_cmd_callback(const void *msin)
 void lservo_cmd_callback(const void *msin)
 {
   const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msin;
-  lservo.set_target(msg->data);
+  // NOTE: units changed - this is now a speed command in [-1.0, 1.0],
+  // not a position in [0.0, 1.0]. 0.0 = stop, sign = direction.
+  lservo.set_speed(msg->data);
 }
 
 void sand_box_cmd_callback(const void *msin)
@@ -456,9 +456,9 @@ void destroy_entities()
   if (entities_stage >= 18)
     rclc_executor_fini(&executor);
   if (entities_stage >= 17)
-    rcl_publisher_fini(&limit_switch_1_pub, &node);
-  if (entities_stage >= 16)
     rcl_publisher_fini(&limit_switch_2_pub, &node);
+  if (entities_stage >= 16)
+    rcl_publisher_fini(&limit_switch_1_pub, &node);
   if (entities_stage >= 15)
     rcl_publisher_fini(&drill_cont_pub, &node);
   if (entities_stage >= 14)
