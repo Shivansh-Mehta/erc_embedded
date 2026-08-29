@@ -53,7 +53,6 @@ void error_loop()
 #define SAND_BOX_DT 17
 #define SAND_BOX_SCK 16
 #define SAND_BOX_SF 1.0f
-// #define SAND_BOX_SF -40.0f
 
 #define ROCK_BOX_DT 34
 #define ROCK_BOX_SCK 33
@@ -61,7 +60,7 @@ void error_loop()
 
 #define DCONT_BOX_DT 32
 #define DCONT_BOX_SCK 31
-#define DCONT_BOX_SF 1.0f
+#define DCONT_BOX_SF -41.5f
 
 #define STALIG_G 37
 #define STALIG_Y 36
