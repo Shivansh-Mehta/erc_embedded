@@ -501,3 +501,68 @@ void LoadCell::update()
     }
   }
 }
+
+Pump::Pump(uint8_t pin_pwm, uint8_t pin_in1, uint8_t pin_in2)
+    : Driver(pin_pwm, pin_in1, pin_in2)
+{
+  m_instance_la = this;
+};
+
+Pump *Pump::m_instance_la = nullptr;
+
+void Pump::init_motor()
+{
+  init_driver();
+}
+
+void Pump::release()
+{
+  drive(m_pwm_flowrate, true);
+  m_timer.begin(isr_timer_router, (m_pwm_dur * 1000 * 1000));
+}
+
+void Pump::draw()
+{
+  drive(m_pwm_flowrate, false);
+  m_timer.begin(isr_timer_router, (m_pwm_dur * 1000 * 1000));
+}
+
+void Pump::release(int pwm_flowrate, float req_vol)
+{
+  float pwm_dur = ((req_vol) / (m_oem_max_flowrate * 1));
+  drive(pwm_flowrate, true);
+  m_timer.begin(isr_timer_router, (pwm_dur * 1000 * 1000));
+}
+
+void Pump::draw(int pwm_flowrate, float req_vol)
+{
+  float pwm_dur = ((req_vol) / (m_oem_max_flowrate * 1));
+  drive(pwm_flowrate, false);
+  m_timer.begin(isr_timer_router, (pwm_dur * 1000 * 1000));
+}
+
+void Pump::stop_motor()
+{
+  stop_driver();
+}
+
+void Pump::isr_timer_router()
+{
+  if (m_instance_la != nullptr)
+  {
+    m_instance_la->handle_isr();
+  }
+}
+
+void Pump::handle_isr()
+{
+  m_timer.end();
+  stop_motor();
+}
+
+void Pump::home(bool dir)
+{
+  m_home_dur = 30;
+  drive(m_pwm_flowrate, dir);
+  m_timer.begin(isr_timer_router, (m_home_dur * 1000 * 1000));
+}

@@ -43,6 +43,10 @@ void error_loop()
 #define MOTOR2_INA 19
 #define MOTOR2_INB 18
 
+#define PUMP_PWM 28
+#define PUMP_INA 29
+#define PUMP_INB 30
+
 #define LINACT_PWM 28
 #define LINACT_INA 30
 #define LINACT_INB 29
@@ -92,6 +96,10 @@ AugerMotor motor1(MOTOR1_PWM, MOTOR1_INA, MOTOR1_INB);
 rcl_subscription_t motor2_cmd_sub;
 std_msgs__msg__Int32 motor2_pwm_cmd_msg;
 LeadScrewMotor motor2(MOTOR2_PWM, MOTOR2_INA, MOTOR2_INB);
+
+rcl_subscription_t pump_cmd_sub;
+std_msgs__msg__UInt8 pump_pwm_cmd_msg;
+Pump pump(PUMP_PWM, PUMP_INA, PUMP_INB);
 
 rcl_subscription_t linact_state_cmd_sub;
 std_msgs__msg__UInt8 linact_state_cmd_msg;
@@ -155,6 +163,7 @@ void lservo_cmd_callback(const void *msin);
 void sand_box_cmd_callback(const void *msin);
 void rock_box_cmd_callback(const void *msin);
 void dcont_box_cmd_callback(const void *msin);
+void pump_cmd_callback(const void *msin);
 
 void setup()
 {
@@ -164,12 +173,13 @@ void setup()
   switch2.init();
   motor1.init_motor();
   motor2.init_motor();
+  pump.init_motor();
   linact.init_motor();
   stalig.init_light();
   gservo.init();
   lservo.init();
   // sand_box.init();
-  rock_box.init();
+  // rock_box.init();
   // drill_cont.init();
 
   digitalWrite(LED_BUILTIN, HIGH);
@@ -303,6 +313,25 @@ void linact_cext_cmd_callback(const void *msin)
     linact.retract(255, abs(cext));
 }
 
+void pump_cmd_callback(const void *msin)
+{
+  const std_msgs__msg__UInt8 *msg = (const std_msgs__msg__UInt8 *)msin;
+  uint8_t state = msg->data;
+  if (state == 1)
+    pump.release();
+  else if (state == 2)
+    pump.draw();
+  else if (state == 3)
+    pump.home(true);
+  else if (state == 4)
+    pump.home(false);
+  else if (state == 5)
+  {
+    pump.home(false);
+    pump.draw();
+  }
+}
+
 void stalig_state_cmd_callback(const void *msin)
 {
   const std_msgs__msg__UInt8 *msg = (const std_msgs__msg__UInt8 *)msin;
@@ -404,31 +433,35 @@ bool create_entities()
     return false;
   entities_stage = 12;
 
-  // Publishers
-  if (RCL_RET_OK != rclc_publisher_init_default(&sand_box_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "sand_box/weight"))
+  if (RCL_RET_OK != rclc_subscription_init_default(&pump_cmd_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "pump/state"))
     return false;
   entities_stage = 13;
 
-  if (RCL_RET_OK != rclc_publisher_init_default(&rock_box_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "rock_box/weight"))
+  // Publishers
+  if (RCL_RET_OK != rclc_publisher_init_default(&sand_box_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "sand_box/weight"))
     return false;
   entities_stage = 14;
 
-  if (RCL_RET_OK != rclc_publisher_init_default(&drill_cont_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "drill_cont/weight"))
+  if (RCL_RET_OK != rclc_publisher_init_default(&rock_box_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "rock_box/weight"))
     return false;
   entities_stage = 15;
 
-  if (RCL_RET_OK != rclc_publisher_init_default(&limit_switch_1_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "ls1/status"))
+  if (RCL_RET_OK != rclc_publisher_init_default(&drill_cont_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "drill_cont/weight"))
     return false;
   entities_stage = 16;
 
-  if (RCL_RET_OK != rclc_publisher_init_default(&limit_switch_2_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "ls2/status"))
+  if (RCL_RET_OK != rclc_publisher_init_default(&limit_switch_1_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "ls1/status"))
     return false;
   entities_stage = 17;
+
+  if (RCL_RET_OK != rclc_publisher_init_default(&limit_switch_2_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "ls2/status"))
+    return false;
+  entities_stage = 18;
 
   // Initialize Executor for 10 subscription handles
   if (RCL_RET_OK != rclc_executor_init(&executor, &support.context, 12, &allocator))
     return false;
-  entities_stage = 18;
+  entities_stage = 19;
 
   // Add subscriptions to executor
   rclc_executor_add_subscription(&executor, &motor1_cmd_sub, &motor1_pwm_cmd_msg, &motor1_cmd_callback, ON_NEW_DATA);
@@ -441,6 +474,7 @@ bool create_entities()
   rclc_executor_add_subscription(&executor, &sand_box_cmd_sub, &sand_box_cmd_msg, &sand_box_cmd_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &rock_box_cmd_sub, &rock_box_cmd_msg, &rock_box_cmd_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &drill_cont_cmd_sub, &drill_cont_cmd_msg, &dcont_box_cmd_callback, ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &pump_cmd_sub, &pump_pwm_cmd_msg, &pump_cmd_callback, ON_NEW_DATA);
 
   return true;
 }
@@ -453,18 +487,20 @@ void destroy_entities()
   rmw_context_t *rmw_ctx = rcl_context_get_rmw_context(&support.context);
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_ctx, 0);
 
-  if (entities_stage >= 18)
+  if (entities_stage >= 19)
     rclc_executor_fini(&executor);
-  if (entities_stage >= 17)
+  if (entities_stage >= 18)
     rcl_publisher_fini(&limit_switch_2_pub, &node);
-  if (entities_stage >= 16)
+  if (entities_stage >= 17)
     rcl_publisher_fini(&limit_switch_1_pub, &node);
-  if (entities_stage >= 15)
+  if (entities_stage >= 16)
     rcl_publisher_fini(&drill_cont_pub, &node);
-  if (entities_stage >= 14)
+  if (entities_stage >= 15)
     rcl_publisher_fini(&rock_box_pub, &node);
-  if (entities_stage >= 13)
+  if (entities_stage >= 14)
     rcl_publisher_fini(&sand_box_pub, &node);
+  if (entities_stage >= 13)
+    rcl_subscription_fini(&pump_cmd_sub, &node);
   if (entities_stage >= 12)
     rcl_subscription_fini(&drill_cont_cmd_sub, &node);
   if (entities_stage >= 11)

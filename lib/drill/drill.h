@@ -231,4 +231,34 @@ private:
   uint8_t m_buffer_idx;
 };
 
+class Pump : private Driver
+{
+public:
+  Pump(uint8_t pin_pwm, uint8_t pin_in1, uint8_t pin_in2);
+  void init_motor();
+  void release();
+  void draw();
+  void home(bool dir);
+  void stop_motor();
+
+  // functions in case we need to send modified values
+  void release(int pwm_flowrate, float req_vol);
+  void draw(int pwm_flowrate, float req_vol);
+
+private:
+  // average of 3 readings of liquid volume for time stamps is taken to get the flow rate
+  const float m_oem_max_flowrate = (((100.0f / 15.0f) + (150.0f / 22.0f) + (200.0f / 29.5f)) / 3.0f); // [mL/s]
+  // m_oem_max_flowrate = 6.755 mL/s
+
+  float m_pwm_flowrate = 255;                                 // 100% duty-cycle for max power
+  float m_req_vol = 75;                                       // [mL]
+  float m_pwm_dur = ((m_req_vol) / (m_oem_max_flowrate * 1)); // [s]
+  float m_home_dur = (100.0f / m_oem_max_flowrate);           // [s] for tube length of 100mL volume
+
+  IntervalTimer m_timer;
+  static Pump *m_instance_la;
+  static void isr_timer_router();
+  void handle_isr();
+};
+
 #endif
