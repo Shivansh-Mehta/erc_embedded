@@ -6,29 +6,17 @@
 #define SCIENCE_H
 
 #include <Arduino.h>
+#include <math.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include "Zanshin_BME680.h"
 
+// Install via Arduino Library Manager: "SparkFun SCD4x Arduino Library"
+#include "SparkFun_SCD4x_Arduino_Library.h"
+
 constexpr float V_REF = 3.3f;
 constexpr float ADC_RES = 1023.0f;
-
-class Pump
-{
-public:
-  Pump(uint8_t pin_pwm, uint8_t pin_in1, uint8_t pin_in2);
-  void init_pump();
-  void drive(int pwm_speed, bool dir);
-  void stop_pump();
-
-private:
-  uint8_t m_pin_pwm;
-  uint8_t m_pin_in1;
-  uint8_t m_pin_in2;
-  int m_cache_speed;
-  bool m_cache_dir;
-};
 
 class AnalogSensor
 {
@@ -45,10 +33,17 @@ public:
 
 class DigitalSensor
 {
+protected:
+  // Tracks whether init() actually succeeded. Reads made before/without a
+  // successful init() now return a clear sentinel instead of silently
+  // touching an uninitialized sensor object.
+  bool m_ready = false;
+
 public:
   virtual ~DigitalSensor() = default;
   virtual bool init() = 0;
   virtual void request_read() {}
+  bool is_ready() const { return m_ready; }
 };
 
 class pHSensor : public AnalogSensor
@@ -112,19 +107,26 @@ public:
   BME688Sensor();
 
   bool init() override;
+  void request_read() override; // triggers a forced-mode conversion, non-blocking
   void get_data(float &temp, float &hum, float &press, float &gas);
 };
 
+// Talks over Wire1 (SDA=17, SCL=16 on Teensy 4.1) - a separate bus from the
+// BME688 above, which is stuck on default Wire since the Zanshin/Zanduino
+// library has no way to target an alternate TwoWire bus.
 class SCD41Sensor : public DigitalSensor
 {
 private:
-  uint8_t m_i2c_addr;
+  SCD4x m_sensor;
 
 public:
-  SCD41Sensor(uint8_t i2c_addr = 0x62);
+  SCD41Sensor();
 
   bool init() override;
-  void request_read() override;
+  // No request_read() override: SCD4x's own readMeasurement() is already a
+  // non-blocking check-and-fetch (it just polls the data-ready flag), so
+  // get_value() calls it directly rather than needing an external
+  // trigger/wait split.
   float get_value();
 };
 

@@ -51,6 +51,7 @@ Use this base command in your terminal, replacing `XX` with the 2-digit codes be
 
 * **Test:** Send `41`, then `42`. Because this is a slow sensor, the Teensy will safely yield back to the executor and wait 800ms before placing the value into Index 4.
 * **Calibrate:** These are factory-calibrated. To test accuracy, place the metal tip in a glass of ice water; it should read very close to 0°C.
+* **Warning:** After sending the read signal, you will have to WAIT FOR 5 SECONDS ATLEAST to send the next read, otherwise the sensor might throw up some errors, or maybe not.
 
 ### 5. BME688 Environmental
 

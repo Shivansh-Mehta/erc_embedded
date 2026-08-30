@@ -4,52 +4,6 @@
 
 #include "science.h"
 
-Pump::Pump(uint8_t pin_pwm, uint8_t pin_in1, uint8_t pin_in2)
-    : m_pin_pwm(pin_pwm),
-      m_pin_in1(pin_in1),
-      m_pin_in2(pin_in2) {};
-
-void Pump::init_pump()
-{
-  analogWriteFrequency(m_pin_pwm, 10000);
-  pinMode(m_pin_pwm, OUTPUT);
-  pinMode(m_pin_in1, OUTPUT);
-  pinMode(m_pin_in2, OUTPUT);
-  stop_pump();
-}
-
-void Pump::drive(int pwm_speed, bool dir)
-{
-  // if the new speed value takes place in the opp direction, then reduce the motor speed to zero first
-  if (dir != m_cache_dir)
-  {
-    analogWrite(m_pin_pwm, constrain(0, 0, 255));
-  }
-
-  analogWrite(m_pin_pwm, constrain(pwm_speed, 0, 255));
-  if (dir)
-  {
-    digitalWrite(m_pin_in1, HIGH);
-    digitalWrite(m_pin_in2, LOW);
-  }
-  else
-  {
-    digitalWrite(m_pin_in1, LOW);
-    digitalWrite(m_pin_in2, HIGH);
-  }
-
-  // store the last state of Pump for reference
-  m_cache_speed = pwm_speed;
-  m_cache_dir = dir;
-}
-
-void Pump::stop_pump()
-{
-  analogWrite(m_pin_pwm, 0);
-  digitalWrite(m_pin_in1, LOW);
-  digitalWrite(m_pin_in2, LOW);
-}
-
 AnalogSensor::AnalogSensor(uint8_t pin) : m_pin(pin) {}
 
 void AnalogSensor::init()
@@ -67,10 +21,10 @@ pHSensor::pHSensor(uint8_t pin, float offset)
 
 float pHSensor::get_value()
 {
-  float voltage = (read_voltage());
+  float voltage = read_voltage();
   float slope = ((7.0 - 4.0) / (1.5 - 2.03));
   float raw_ph = 7.0 + (slope * (voltage - 1.5));
-  return raw_ph;
+  return raw_ph + m_calibration_offset; // FIX: offset was computed but never applied before
 }
 
 void pHSensor::set_calibration_offset(float offset)
@@ -84,17 +38,12 @@ CapacitiveMoistureSensor::CapacitiveMoistureSensor(uint8_t pin)
 float CapacitiveMoistureSensor::get_value()
 {
   float raw = static_cast<float>(analogRead(m_pin));
-
-  // Map the raw values to a 0-100% scale
   // Air = 759.0, Water = 403.0
   float moisture_pct = ((759.0f - raw) / (759.0f - 403.0f)) * 100.0f;
-
-  // Clamp the output so it doesn't go below 0% or above 100%
   if (moisture_pct < 0.0f)
     return 0.0f;
   if (moisture_pct > 100.0f)
     return 100.0f;
-
   return moisture_pct;
 }
 
@@ -106,9 +55,9 @@ float TDSSensor::get_value()
   float voltage = read_voltage();
 
   // 2. Apply a calibration factor.
-  // You will need to calculate this by placing the sensor in a known TDS fluid.
+  // Still a placeholder - calculate this by placing the sensor in a known TDS fluid.
   // Example: If a 1000 ppm fluid gives a reading of 1.5V, your factor is (1000 / 1.5) = 666.67
-  float calibration_factor = 666.67f; // Replace with your tested number
+  float calibration_factor = (194.107 / 0.713); // Replace with your tested number
 
   float tds_value = voltage * calibration_factor;
 
@@ -138,28 +87,31 @@ DS18B20Sensor::DS18B20Sensor(uint8_t pin)
 
 bool DS18B20Sensor::init()
 {
+  pinMode(m_pin, INPUT_PULLUP);
   m_sensor.begin();
 
   // CRITICAL: This prevents the library from freezing the Teensy for 750ms.
   // It allows your Sequential State Machine to trigger a read and walk away.
   m_sensor.setWaitForConversion(false);
+  m_sensor.setResolution(12); // explicit - matches the 750ms conversion-time assumption exactly
 
   // Check if the sensor is physically wired and responding
-  if (m_sensor.getDeviceCount() == 0)
-  {
-    return false;
-  }
-
-  return true;
+  m_ready = (m_sensor.getDeviceCount() != 0);
+  return m_ready;
 }
 
 void DS18B20Sensor::request_read()
 {
+  if (!m_ready)
+    return; // don't trigger a conversion on a probe that was never found
   m_sensor.requestTemperatures();
 }
 
 float DS18B20Sensor::get_value()
 {
+  if (!m_ready)
+    return -127.0f; // matches the DallasTemperature library's own "disconnected" sentinel
+
   return m_sensor.getTempCByIndex(0);
 }
 
@@ -167,26 +119,44 @@ BME688Sensor::BME688Sensor() {}
 
 bool BME688Sensor::init()
 {
-  if (!m_sensor.begin(I2C_STANDARD_MODE))
-  {
+  m_ready = m_sensor.begin(I2C_STANDARD_MODE);
+  if (!m_ready)
     return false;
-  }
 
   m_sensor.setOversampling(TemperatureSensor, Oversample16);
   m_sensor.setOversampling(HumiditySensor, Oversample16);
   m_sensor.setOversampling(PressureSensor, Oversample16);
   m_sensor.setIIRFilter(IIR4);
-  m_sensor.setGas(320, 150); // Heater set to 320°C for 150ms
+  m_sensor.setGas(320, 150); // Heater set to 320 degrees C for 150ms
 
   return true;
 }
 
+void BME688Sensor::request_read()
+{
+  if (!m_ready)
+    return;
+
+  // Non-blocking: just starts a forced-mode conversion on the sensor.
+  // The result is collected later in get_data() once the caller's tick
+  // counter has waited out the conversion + gas-heater soak time.
+  m_sensor.triggerMeasurement();
+}
+
 void BME688Sensor::get_data(float &temp, float &hum, float &press, float &gas)
 {
+  if (!m_ready)
+  {
+    temp = hum = press = gas = NAN; // makes a failed/never-initialized read visible downstream
+    return;
+  }
+
   int32_t raw_temp, raw_hum, raw_press, raw_gas;
 
-  // fetch raw integer values from the Zanshin library
-  m_sensor.getSensorData(raw_temp, raw_hum, raw_press, raw_gas);
+  // waitSwitch = false: we've already waited out the conversion time via the
+  // caller's tick counter (see request_read()), so this just grabs the
+  // latest completed reading instead of blocking the ROS executor here.
+  m_sensor.getSensorData(raw_temp, raw_hum, raw_press, raw_gas, false);
 
   // convert library integer formats to standard float units
   temp = raw_temp / 100.0f;   // Celsius
@@ -195,46 +165,35 @@ void BME688Sensor::get_data(float &temp, float &hum, float &press, float &gas)
   gas = raw_gas / 100.0f;     // Ohms
 }
 
-SCD41Sensor::SCD41Sensor(uint8_t i2c_addr) : m_i2c_addr(i2c_addr) {}
+SCD41Sensor::SCD41Sensor() {}
 
 bool SCD41Sensor::init()
 {
-  Wire.beginTransmission(m_i2c_addr);
+  // .begin() already calls stopPeriodicMeasurement() internally (500ms
+  // blocking - acceptable here since init() is a one-time bring-up call,
+  // never on the fast telemetry read path) before verifying presence via
+  // getSerialNumber(). That's exactly the fix needed for a sensor left
+  // running periodic measurement from a previous session - see the
+  // earlier hand-rolled version's comments for why that mattered.
+  m_ready = m_sensor.begin(Wire1);
+  if (!m_ready)
+    return false;
 
-  // send standard 0x21 0xB1 command: "start periodic measurement"
-  Wire.write(0x21);
-  Wire.write(0xB1);
-
-  return (Wire.endTransmission() == 0);
-}
-
-void SCD41Sensor::request_read()
-{
-  Wire.beginTransmission(m_i2c_addr);
-
-  // send standard 0xEC 0x05 command: "read measurement"
-  Wire.write(0xEC);
-  Wire.write(0x05);
-
-  Wire.endTransmission();
+  m_ready = m_sensor.startPeriodicMeasurement();
+  return m_ready;
 }
 
 float SCD41Sensor::get_value()
 {
-  // SCD41 sends exactly 9 bytes for a read measurement
-  Wire.requestFrom(m_i2c_addr, static_cast<uint8_t>(9));
+  if (!m_ready)
+    return -1.0f;
 
-  if (Wire.available() >= 9)
-  {
-    uint8_t data[9];
-    for (int i = 0; i < 9; i++)
-    {
-      data[i] = Wire.read();
-    }
-    // Bitwise shift to combine the High and Low bytes of the CO2 reading
-    return static_cast<float>((uint16_t)data[0] << 8 | data[1]);
-  }
+  // readMeasurement() is itself a non-blocking check-and-fetch: it polls the
+  // data-ready flag and only pulls a new sample over I2C if one's actually
+  // waiting, returning false immediately otherwise (periodic mode only
+  // produces a new sample every ~5s).
+  if (!m_sensor.readMeasurement())
+    return -1.0f;
 
-  // Return 0.0 if data was not available on the bus
-  return 0.0f;
+  return static_cast<float>(m_sensor.getCO2());
 }
